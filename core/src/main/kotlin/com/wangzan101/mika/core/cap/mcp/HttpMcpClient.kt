@@ -108,6 +108,7 @@ class HttpMcpEndpoint private constructor(
         val sid = sessionId ?: return
         runCatching {
             val request = Request.Builder().url(url).delete()
+                .apply { headers.forEach { (k, v) -> header(k, v) } }
                 .header("MCP-Session-Id", sid)
                 .header("MCP-Protocol-Version", protocolVersion)
                 .build()
@@ -147,8 +148,9 @@ class HttpMcpEndpoint private constructor(
         sessionId?.let { builder.header("MCP-Session-Id", it) }
         headers.forEach { (k, v) -> if (!k.equals("Content-Type", true) && !k.equals("Accept", true)) builder.header(k, v) }
         val request = builder.post(body.toRequestBody(JSON_MEDIA)).build()
-        val response = client.newCall(request).await(timeoutSec)
-        return RawResponse(response.code, response.header("Mcp-Session-Id"), response.body?.string().orEmpty())
+        return client.newCall(request).awaitBody(timeoutSec) { response ->
+            RawResponse(response.code, response.header("Mcp-Session-Id"), response.body?.string().orEmpty())
+        }
     }
 
     private fun sseMessages(body: String): List<JsonObject> {
@@ -237,6 +239,7 @@ class HttpMcpEndpoint private constructor(
                 putJsonObject("params") {}
             }
             runCatching { postRaw(parsed, initialized.toString(), headers, timeoutSec, http, session, negotiated) }
+                .onFailure { if (it is CancellationException) throw it }
 
             val tools = mutableListOf<McpToolDescriptor>()
             var cursor: String? = null
@@ -302,7 +305,7 @@ class HttpMcpEndpoint private constructor(
                 serverName = serverName,
                 instructions = instructions,
             )
-        }
+        }.onFailure { if (it is CancellationException) throw it }
 
         private fun JsonObject.matchesId(id: Long): Boolean =
             (this["id"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull() == id
@@ -423,8 +426,9 @@ class HttpMcpEndpoint private constructor(
             val request = builder.post(body.toRequestBody(JSON_MEDIA)).build()
             val client = http.newBuilder().callTimeout(timeoutSec.toLong(), TimeUnit.SECONDS)
                 .followRedirects(false).followSslRedirects(false).build()
-            val response = client.newCall(request).await(timeoutSec)
-            return RawResponse(response.code, response.header("Mcp-Session-Id"), response.body?.string().orEmpty())
+            return client.newCall(request).awaitBody(timeoutSec) { response ->
+                RawResponse(response.code, response.header("Mcp-Session-Id"), response.body?.string().orEmpty())
+            }
         }
 
         private data class RawResponse(val code: Int, val sessionId: String?, val body: String)
@@ -432,6 +436,28 @@ class HttpMcpEndpoint private constructor(
 }
 
 private val JSON_MEDIA = "application/json".toMediaType()
+
+/** 正文也在 OkHttp 回调线程里读完再交回;读取期间取消仍会取消 call,Response 在所有路径上关闭。 */
+private suspend fun <T> Call.awaitBody(timeoutSec: Int, read: (Response) -> T): T = suspendCancellableCoroutine { continuation ->
+    timeout().timeout(timeoutSec.toLong(), TimeUnit.SECONDS)
+    continuation.invokeOnCancellation { cancel() }
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            if (continuation.isActive) continuation.resumeWithException(e)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (!continuation.isActive) { response.close(); return }
+            val result = try {
+                response.use(read)
+            } catch (e: Exception) {
+                if (continuation.isActive) continuation.resumeWithException(e)
+                return
+            }
+            if (continuation.isActive) continuation.resume(result)
+        }
+    })
+}
 
 /** OkHttp 的异步调用包成可取消的 suspend;取消时取消底层 call。 */
 internal suspend fun Call.await(timeoutSec: Int): Response = suspendCancellableCoroutine { continuation ->
