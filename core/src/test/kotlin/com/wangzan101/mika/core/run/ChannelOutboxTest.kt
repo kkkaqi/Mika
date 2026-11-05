@@ -11,13 +11,38 @@ class ChannelOutboxTest {
     private class FakeChannel(override val confirms: Boolean = true) : Channel {
         override val id = "fake"
         val sent = mutableListOf<Delivery>()
+        val acknowledged = mutableListOf<String>()
         var outcome = SendOutcome.Delivered
         var alive = true
         private var sink: ChannelInputSink? = null
         override fun isAlive(peer: ChannelPeer) = alive
+        override fun acknowledge(messageId: String) { acknowledged += messageId }
         override fun start(sink: ChannelInputSink): AutoCloseable { this.sink = sink; return AutoCloseable { this.sink = null } }
         override suspend fun send(peer: ChannelPeer, delivery: Delivery): SendOutcome { sent += delivery; return outcome }
         suspend fun receive(input: ChannelInput) { sink?.receive(input) }
+    }
+
+    @Test fun replayedAnswerIsAcknowledgedWithoutStartingANewTask() = runBlocking {
+        val channel = FakeChannel()
+        var active: Delivery.Ask? = Delivery.Ask("d", "thread", "a", Delivery.Ask.Kind.Input, "which?")
+        val events = mutableListOf<String>()
+        ChannelGateway(MemoryOwnerIdentity().also { it.bind(peer) }, { active }, object : ChannelGateway.Route {
+            override suspend fun newTask(peer: ChannelPeer, messageId: String, text: String) { events += "new" }
+            override suspend fun answer(threadId: String, askId: String, text: String): Boolean {
+                events += "answer:$text"
+                active = null
+                return true
+            }
+            override suspend fun confirm(threadId: String, askId: String, choice: ConfirmChoice) = false
+            override suspend fun stop(runId: RunId) = Unit
+            override suspend fun cancelAsk(threadId: String) { events += "cancel" }
+        }).start(channel)
+        val reply = ChannelInput.Text(peer, "m", "A", replyToAskId = "a")
+        channel.receive(reply)
+        active = Delivery.Ask("new-d", "thread", "new-a", Delivery.Ask.Kind.Input, "next?")
+        channel.receive(reply)
+        assertEquals(listOf("answer:A"), events)
+        assertEquals(listOf("m", "m"), channel.acknowledged)
     }
 
     @Test fun askReplyConfirmAndResultRoundTrip() = runBlocking {

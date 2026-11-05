@@ -13,6 +13,10 @@ import com.wangzan101.mika.core.wechat.WechatUpdates
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 
 /** 微信只适配收发；主人校验、提问路由和任务执行都在通用渠道层。 */
@@ -20,13 +24,15 @@ class WechatChannel(
     private val store: WechatStore,
     private val api: WechatApi,
     private val log: (String) -> Unit = { Log.i(TAG, it) },
+    private val activeAsk: (String) -> Delivery.Ask? = { null },
 ) : Channel {
     override val id = ID
     override val confirms = false
     @Volatile private var sink: ChannelInputSink? = null
+    private val pollLock = Mutex()
 
     override fun isAlive(peer: ChannelPeer): Boolean =
-        peer.channelId == id && store.enabled() && store.account() != null
+        peer.channelId == id && store.account()?.ownerId == peer.peerId
 
     override fun start(sink: ChannelInputSink): AutoCloseable {
         this.sink = sink
@@ -62,26 +68,37 @@ class WechatChannel(
     }
 
     /** 先补交上次未登记的消息，再取新消息；任务登记处做最终幂等。 */
-    suspend fun pollOnce(): WechatUpdates? {
-        val input = sink ?: return null
-        store.pending().forEach { pending ->
-            input.receive(ChannelInput.Text(pending.peer, pending.messageId, pending.text))
+    suspend fun pollOnce(): WechatUpdates? = pollLock.withLock {
+        val input = sink ?: return@withLock null
+        val account = store.account() ?: return@withLock null
+        suspend fun listening(): Boolean {
+            currentCoroutineContext().ensureActive()
+            return sink === input && store.enabled() && store.account() == account
         }
-        val account = store.account() ?: return null
+        if (!listening()) return@withLock null
+        store.pending().forEach { pending ->
+            if (!listening()) return@withLock null
+            input.receive(ChannelInput.Text(pending.peer, pending.messageId, pending.text, pending.replyToAskId))
+        }
+        if (!listening()) return@withLock null
         val updates = api.updates(account, store.cursor())
+        if (!listening()) return@withLock null
         updates.msgs.forEach { message ->
+            if (!listening()) return@withLock null
             val owner = account.ownerId
             if (message.fromUserId != owner) return@forEach
             store.rememberContext(owner, message.contextToken)
             val text = message.userText() ?: return@forEach
             val messageId = message.messageId ?: return@forEach
             val peer = store.peer(owner)
-            if (store.journal(messageId, peer, text)) {
-                input.receive(ChannelInput.Text(peer, messageId, text))
+            val askId = activeAsk(peer.threadId)?.takeIf { it.kind == Delivery.Ask.Kind.Input }?.askId
+            if (store.journal(messageId, peer, text, askId)) {
+                input.receive(ChannelInput.Text(peer, messageId, text, askId))
             }
         }
+        if (!listening()) return@withLock null
         if (updates.cursor.isNotEmpty()) store.saveCursor(updates.cursor)
-        return updates
+        updates
     }
 
     companion object {

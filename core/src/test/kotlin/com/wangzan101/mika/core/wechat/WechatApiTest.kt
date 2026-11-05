@@ -11,9 +11,15 @@ import org.junit.Assert.assertNotNull
 import org.junit.Test
 import java.net.InetAddress
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.supervisorScope
 
 class WechatApiTest {
-    private fun server(block: (MockWebServer, WechatApi) -> Unit) {
+    private fun server(block: suspend (MockWebServer, WechatApi) -> Unit) = runBlocking {
         MockWebServer().use { server ->
             server.start(InetAddress.getByName("127.0.0.1"), 0)
             val api = WechatApi(OkHttpClient(), "0.1.35", server.url("/").toString())
@@ -22,6 +28,25 @@ class WechatApiTest {
     }
 
     private fun response(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
+
+    @Test fun cancellingPollCancelsHttpWhileReadingTheBody() =
+        cancelledPoll(response("""{"get_updates_buf":"next"}""").setBodyDelay(3, TimeUnit.SECONDS))
+
+    @Test fun cancellingPollCancelsHttpBeforeResponseHeaders() =
+        cancelledPoll(response("""{"get_updates_buf":"next"}""").setHeadersDelay(3, TimeUnit.SECONDS))
+
+    private fun cancelledPoll(response: MockResponse) = runBlocking { supervisorScope {
+        MockWebServer().use { server ->
+            val client = OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build()
+            val api = WechatApi(client, "0.1.36", server.url("/").toString())
+            server.enqueue(response)
+            val poll = async(Dispatchers.IO) {
+                api.updates(WechatAccount("token", server.url("/").toString(), "bot", "owner"), "old")
+            }
+            assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+            withTimeout(1_000) { poll.cancelAndJoin() }
+        }
+    } }
 
     @Test fun qrLoginCarriesBotTypeAndRestoresAccount() = server { server, api ->
         server.enqueue(response("""{"qrcode":"qr-key","qrcode_img_content":"https://example.test/qr"}"""))

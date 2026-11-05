@@ -10,7 +10,8 @@ import java.io.FileOutputStream
 import java.util.UUID
 
 @Serializable
-data class PendingWechatMessage(val messageId: String, val peer: ChannelPeer, val text: String)
+data class PendingWechatMessage(val messageId: String, val peer: ChannelPeer, val text: String,
+    val replyToAskId: String? = null)
 
 @Serializable
 private data class WechatState(
@@ -19,6 +20,7 @@ private data class WechatState(
     val threads: Map<String, String> = emptyMap(),
     val contextTokens: Map<String, String> = emptyMap(),
     val pending: List<PendingWechatMessage> = emptyList(),
+    val acknowledgedMessages: Set<String> = emptySet(),
 )
 
 /** 凭证与运行状态分开保存：令牌加密，游标和未交任务的消息原子落盘。 */
@@ -64,9 +66,9 @@ class WechatStore(private val dir: File, private val cipher: KeyCipher) {
     }
 
     /** 同一消息只入站一次；未确认的会在下次启动由 [pending] 补交。 */
-    @Synchronized fun journal(messageId: String, peer: ChannelPeer, text: String): Boolean {
-        if (state.pending.any { it.messageId == messageId }) return false
-        state = state.copy(pending = state.pending + PendingWechatMessage(messageId, peer, text))
+    @Synchronized fun journal(messageId: String, peer: ChannelPeer, text: String, replyToAskId: String? = null): Boolean {
+        if (messageId in state.acknowledgedMessages || state.pending.any { it.messageId == messageId }) return false
+        state = state.copy(pending = state.pending + PendingWechatMessage(messageId, peer, text, replyToAskId))
         saveState()
         return true
     }
@@ -75,7 +77,9 @@ class WechatStore(private val dir: File, private val cipher: KeyCipher) {
 
     @Synchronized fun acknowledge(messageId: String) {
         if (state.pending.none { it.messageId == messageId }) return
-        state = state.copy(pending = state.pending.filterNot { it.messageId == messageId })
+        // 游标尚未落盘时可能重投；已消费的任务和答案都不能按当前追问重新分类。
+        state = state.copy(pending = state.pending.filterNot { it.messageId == messageId },
+            acknowledgedMessages = state.acknowledgedMessages + messageId)
         saveState()
     }
 

@@ -22,8 +22,12 @@ class ChannelGateway(
             is ChannelInput.Stop -> route.stop(input.runId)
             is ChannelInput.Text -> {
                 val ask = activeAsk(input.peer.threadId)
-                if (input.replyToAskId != null && ask?.askId == input.replyToAskId && ask.kind == Delivery.Ask.Kind.Input) {
-                    route.answer(input.peer.threadId, ask.askId, input.text)
+                if (input.replyToAskId != null) {
+                    if (ask?.askId == input.replyToAskId && ask.kind == Delivery.Ask.Kind.Input) {
+                        route.answer(input.peer.threadId, ask.askId, input.text)
+                    }
+                    // 答案只属于原问题；已回答、已过期或进程重启后的重投不能变成新任务。
+                    channel.acknowledge(input.messageId)
                 } else {
                     if (ask != null) route.cancelAsk(input.peer.threadId)
                     route.newTask(input.peer, input.messageId, input.text)

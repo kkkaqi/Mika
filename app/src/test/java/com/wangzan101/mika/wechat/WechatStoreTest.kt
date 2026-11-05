@@ -16,6 +16,18 @@ class WechatStoreTest {
         override fun decrypt(data: ByteArray): ByteArray = data
     }
 
+    @Test fun consumedReplyCannotBecomeANewTaskAfterRestart() {
+        val dir = tmp.newFolder()
+        val store = WechatStore(dir, cipher)
+        val peer = store.peer("owner")
+        assertTrue(store.journal("reply", peer, "张三", replyToAskId = "question"))
+        store.acknowledge("reply")
+
+        val reopened = WechatStore(dir, cipher)
+        assertFalse(reopened.journal("reply", peer, "张三"))
+        assertTrue(reopened.pending().isEmpty())
+    }
+
     @Test fun accountCursorAndPendingMessageSurviveReopen() {
         val dir = tmp.newFolder()
         val first = WechatStore(dir, cipher)

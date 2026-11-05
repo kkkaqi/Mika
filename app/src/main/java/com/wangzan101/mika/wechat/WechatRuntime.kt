@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -73,7 +74,7 @@ class WechatRuntime(
             }
         })
 
-    val channel = WechatChannel(store, api)
+    val channel = WechatChannel(store, api, activeAsk = { threadId -> app.taskState.run(threadId)?.activeAsk })
     private var registration: AutoCloseable? = null
     private var monitor: Job? = null
     private val network = WechatNetwork(context) { restartMonitor() }
@@ -167,7 +168,8 @@ class WechatRuntime(
         var failures = 0
         while (currentCoroutineContext().isActive && store.enabled()) {
             try {
-                channel.pollOnce()
+                channel.pollOnce() ?: return
+                currentCoroutineContext().ensureActive()
                 failures = 0
                 _state.value = WechatConnectionState.Connected
             } catch (e: CancellationException) {
