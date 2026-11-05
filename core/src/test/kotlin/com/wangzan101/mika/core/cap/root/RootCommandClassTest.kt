@@ -97,6 +97,23 @@ class RootCommandClassTest {
         "sqlite3 -unknownflag notes.db 'select 1'",
     )
 
+    @Test
+    fun logcatClearAndFileOutputNeedApprovalInAllOptionForms() = changes(
+        "logcat -dc",
+        "logcat -d -f/data/local/tmp/review.log",
+        "logcat -df/data/local/tmp/review.log",
+        "logcat -G16M",
+        "logcat --file=/data/local/tmp/review.log",
+        "logcat -d *",
+    )
+
+    @Test
+    fun logcatReadOptionsRemainAvailableWithoutApproval() = readOnly(
+        "logcat -d -t 100",
+        "logcat -d --pid=123 -b main ActivityManager:I",
+        "logcat -d -- '*:S'",
+    )
+
     /** 拿不准的一律当作会改:命令替换、交给另一个 shell、变量当命令、没收尾的引号、here-doc、不认识的命令。 */
     @Test
     fun anythingUnclearNeedsTheUsersOk() = changes(
