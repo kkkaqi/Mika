@@ -2,6 +2,7 @@ package com.wangzan101.mika.cap.root
 
 import android.os.SystemClock
 import android.util.Base64
+import com.wangzan101.mika.core.cap.root.RootCommandClass
 import com.wangzan101.mika.core.cap.root.RootPort
 import com.wangzan101.mika.core.cap.root.RootRun
 import com.wangzan101.mika.core.shell.SuAnswer
@@ -62,7 +63,10 @@ class RootCommands(
     private fun script(command: String, timeoutMs: Long): String {
         val b64 = Base64.encodeToString(command.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         val sec = ((timeoutMs + 999) / 1000).coerceAtLeast(1)
-        return "echo $MARK; c=\"\$(echo $b64 | base64 -d)\"; " +
+        val path = if (RootCommandClass.classify(command) == RootCommandClass.Kind.ReadOnly) {
+            "export PATH=${RootCommandClass.SYSTEM_COMMAND_PATH}; "
+        } else ""
+        return path + "echo $MARK; c=\"\$(echo $b64 | base64 -d)\"; " +
             "if command -v timeout >/dev/null 2>&1; then exec timeout -s KILL $sec sh -c \"\$c\"; else exec sh -c \"\$c\"; fi"
     }
 

@@ -84,6 +84,18 @@ class RootCommandClassTest {
     )
 
     @Test
+    fun unknownExecutablePathsAndEnvironmentOverridesNeedApproval() = changes(
+        "/data/local/tmp/cat /data/local/tmp/input",
+        "./ls /data",
+        "/system/bin/../../data/local/tmp/cat",
+        "/data/local/tmp/toybox ls /data",
+        "toybox /data/local/tmp/cat",
+        "PATH=/data/local/tmp cat /data/local/tmp/input",
+        "PATH=/data/local/tmp; cat /data/local/tmp/input",
+        "LD_PRELOAD=/data/local/tmp/custom.so ls /data",
+    )
+
+    @Test
     fun sqliteWritesNeedTheUsersOk() = changes(
         "sqlite3 notes.db 'DELETE FROM notes'",
         "sqlite3 notes.db \"UPDATE notes SET title='x'\"",
