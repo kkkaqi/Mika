@@ -6,6 +6,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from mika_feishu.api import ApiError, MikaApi
 from mika_feishu.bridge import Bridge, normalize
@@ -106,6 +107,21 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(len(self.sent), count)
         self.deliver("明天呢", "om_2")
         self.assertEqual(self.api.writes[-1], ("start", "明天呢", "mcp-test"))
+
+    def test_old_poll_failure_does_not_mark_replacement_task_uncertain(self):
+        peer = "oc_chat:ou_owner"
+        self.store.update(peer, task_id="task_old")
+
+        def old_task_disappears(task_id):
+            self.assertEqual(task_id, "task_old")
+            self.store.update(peer, task_id="task_new")
+            raise ApiError("http_404", status=404)
+
+        with patch.object(self.api, "task", side_effect=old_task_disappears):
+            self.bridge.poll_once()
+        self.assertEqual(self.store.session(peer)["uncertain"], 0)
+        self.assertEqual(self.store.session(peer)["notice"], "")
+        self.assertEqual(self.sent, [])
 
     def test_cancel_ack_is_not_reported_as_cancelled(self):
         self.deliver()

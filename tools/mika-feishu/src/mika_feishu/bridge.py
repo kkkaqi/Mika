@@ -220,9 +220,13 @@ class Bridge:
                                        ("terminal:" + notice, s["peer"], s["task_id"]))
             except ApiError as exc:
                 if exc.status == 404 or exc.code.startswith("incompatible") or exc.code == "unknown_task_status":
+                    current = self.store.session(s["peer"])
+                    if current["task_id"] != s["task_id"]:
+                        continue
                     notice = "error:" + exc.code
-                    if notice != s["notice"]:
+                    if notice != current["notice"]:
                         self.send(chat, "Cannot track this task (" + exc.code + "). The phone may have restarted or its API changed. No task was resubmitted. Check the phone.",
                                   hashlib.sha256((s["task_id"] + notice).encode()).hexdigest())
-                    self.store.update(s["peer"], uncertain=1, notice=notice)
+                    self.store.execute("UPDATE sessions SET uncertain=1, notice=? WHERE peer=? AND task_id=?",
+                                       (notice, s["peer"], s["task_id"]))
                 # Transient read failures are retried on the next poll; never repeat writes.
