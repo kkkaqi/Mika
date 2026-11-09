@@ -176,7 +176,6 @@ class MainActivity : ComponentActivity() {
     private fun receiveShare(intent: Intent, inCurrentConversation: Boolean) {
         if (intent.action != Intent.ACTION_SEND) return
         shareJob?.cancel()
-        (application as MikaApp).chat.cancelPendingSharedDraft()
         val type = intent.type.orEmpty()
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
         if (text.length > SharedDraftStore.MAX_TEXT_CHARS) {

@@ -1003,6 +1003,12 @@ class ChatViewModelTest {
         assertEquals("原有草稿", vm.ui.value.input)
         assertNotNull(vm.ui.value.quote)
 
+        val missingImage = cancelledImage.copy(fileName = "missing.jpg")
+        assertFalse(vm.openSharedDraft(SharedDraft("", "无效的替换", missingImage), inCurrentConversation = true))
+        assertEquals("将被取消的分享", vm.ui.value.pendingSharedDraft?.text)
+        assertEquals(vm.ui.value.pendingSharedDraft, drafts.readPending())
+        assertTrue(drafts.imageFile("cancelled.jpg")!!.isFile)
+
         // 点「取消」:保留原草稿与原图,删除新分享的临时图片副本。
         vm.cancelPendingSharedDraft()
         assertNull(vm.ui.value.pendingSharedDraft)

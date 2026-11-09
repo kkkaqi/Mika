@@ -1367,7 +1367,7 @@ class ChatViewModel(
             if (!hasUnsentDraft) return applySharedDraftToCurrent(prepared)
             val id = draftConversation()
             val pending = prepared.copy(conversationId = id)
-            cancelPendingSharedDraft()
+            // Replacing the pending draft and cleaning up its old image happen after the new draft is saved.
             if ((pending.image != null && sharedAttachments(pending).size != 1) || !drafts.savePending(pending)) {
                 drafts.discard(pending.image)
                 return false
