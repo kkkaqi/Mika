@@ -107,9 +107,14 @@ class Bridge:
         if not task or task["status"] != "waiting_for_answer":
             return False
         notice = hashlib.sha256(describe(task).encode()).hexdigest()
-        message_ids = self.store.question_messages(peer, task["task_id"], notice)
+        question = self.store.question(peer, task["task_id"], notice)
+        if question is None:
+            return False
+        message_ids, shown_at_ms = question
         parent = event.get("reply_to")
-        return message_ids is not None and (not parent or parent in message_ids)
+        if parent:
+            return parent in message_ids
+        return shown_at_ms is not None and event["created_at"] > shown_at_ms / 1000
 
     def recover(self):
         # Claimed events are never replayed after a crash: execution may already have happened.
@@ -165,9 +170,9 @@ class Bridge:
                 return self.reply(e, "No known task. " + ("The last write is uncertain; check the phone." if session["uncertain"] else ""))
             task = self.api.task(session["task_id"])
             text = describe(task)
-            message_ids = self.reply(e, text)
+            sent = self.reply(e, text)
             if task["status"] == "waiting_for_answer":
-                self.store.remember_question(peer, task["task_id"], hashlib.sha256(text.encode()).hexdigest(), message_ids)
+                self.store.remember_question(peer, task["task_id"], hashlib.sha256(text.encode()).hexdigest(), sent)
             return
         if session["uncertain"]:
             return self.reply(e, "An operation is uncertain. New writes are blocked. Check the phone or task desk, then send /reset checked.")
@@ -240,11 +245,11 @@ class Bridge:
                     notice = hashlib.sha256(text.encode()).hexdigest()
                     saved_notice = "terminal:" + notice if status in TERMINAL else notice
                     if saved_notice == current["notice"] and (status != "waiting_for_answer" or
-                            self.store.question_messages(s["peer"], s["task_id"], notice) is not None):
+                            self.store.question(s["peer"], s["task_id"], notice) is not None):
                         continue
-                    message_ids = self.send(chat, text, hashlib.sha256((s["task_id"] + notice).encode()).hexdigest())
+                    sent = self.send(chat, text, hashlib.sha256((s["task_id"] + notice).encode()).hexdigest())
                     if status == "waiting_for_answer":
-                        self.store.remember_question(s["peer"], s["task_id"], notice, message_ids)
+                        self.store.remember_question(s["peer"], s["task_id"], notice, sent)
                     self.store.execute("UPDATE sessions SET notice=? WHERE peer=? AND task_id=?",
                                        (saved_notice, s["peer"], s["task_id"]))
             except ApiError as exc:
