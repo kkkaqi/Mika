@@ -1405,7 +1405,7 @@ internal fun Composer(
             .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
     ) {
         Column(Modifier.fillMaxWidth()) {
-            if (busy || (mode == ComposerMode.Answer && attachments.isNotEmpty())) {
+            if (busy || (mode == ComposerMode.Answer && (showAttach || attachments.isNotEmpty()))) {
                 FollowUpModeBar(followUpMode, onFollowUpMode, followUpStatus)
             }
             FollowUpTray(queued, active = mode != ComposerMode.Idle, onEdit = onEditQueued, onCancel = onCancelQueued, onStartNow = onStartQueued)
