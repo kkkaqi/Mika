@@ -1758,14 +1758,17 @@ class ChatViewModel(
                 try {
                     removeConversation(id)
                 } catch (e: CancellationException) {
+                    val unfinished = targets.drop(done).toSet()
+                    deleting.removeAll(unfinished)
+                    _deleted.update { it - unfinished }
                     throw e
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     failed++
-                } finally {
-                    deleting -= id
-                    done++
-                    if (report) _deleteBatch.value = DeleteBatch(targets.size, done, failed)
+                    _deleted.update { it - id }
                 }
+                deleting -= id
+                done++
+                if (report) _deleteBatch.value = DeleteBatch(targets.size, done, failed)
             }
         }
     }

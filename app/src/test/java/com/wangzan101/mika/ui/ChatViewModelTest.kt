@@ -1698,15 +1698,17 @@ class ChatViewModelTest {
 
     /** 批量删除:几条一起删,进度一条条往前走;一条删不掉不挡后面的,最后照实说几条失败。 */
     @Test fun deletingABatchReportsProgressAndFailures() = runTest {
-        val store = ConversationStore(tmp.newFolder())
+        val dir = tmp.newFolder()
+        val store = ConversationStore(dir)
         listOf("a", "b", "c").forEach { store.append(it, Turn("问题 $it", "好", "succeeded")) }
+        val blocker = java.io.File(dir, "b.json.tmp")
+        assertTrue(blocker.mkdir())
         val removed = mutableListOf<String>()
         val vm = ChatViewModel(
             backgroundScope, state, stage, actions, store,
             removeConversation = { id ->
-                if (id == "b") error("storage full")
-                removed += id
                 store.delete(id)
+                removed += id
             },
         ).also { runCurrent() }
 
@@ -1717,8 +1719,17 @@ class ChatViewModelTest {
 
         runCurrent()
         assertEquals(listOf("a", "c"), removed)
+        assertEquals(setOf("a", "c"), vm.deleted.value)
+        assertEquals(listOf("b"), store.list().map { it.id })
         assertEquals(DeleteBatch(3, 3, 1), vm.deleteBatch.value)
         assertTrue(vm.deleteBatch.value!!.finished)
+
+        assertTrue(blocker.delete())
+        vm.deleteConversations(listOf("b"))
+        runCurrent()
+        assertEquals(listOf("a", "c", "b"), removed)
+        assertTrue(store.list().isEmpty())
+        assertEquals(DeleteBatch(1, 1, 0), vm.deleteBatch.value)
         vm.clearDeleteBatch()
         assertNull(vm.deleteBatch.value)
     }
