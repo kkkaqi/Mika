@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.personal
 
+import com.wangzan101.mika.core.agent.TokenEstimate
 import com.wangzan101.mika.core.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -119,28 +120,36 @@ class PersonalAgent(
 
     private suspend fun respond() {
         _busy.value = true
-        val pending = state.value.messages.filter { it.role == "user" && !it.handled }.map { it.id }.toSet()
+        val waiting = state.value.messages.asSequence().filter { it.role == "user" && !it.handled }
+            .take(HISTORY_LIMIT).toList()
+        var attemptedIds = waiting.mapTo(mutableSetOf()) { it.id }
         try {
             withTimeout(150_000) {
                 val client = model() ?: error("请先在设置里选择主模型，再回来接着聊。")
                 compact(client)
                 val snapshot = state.value
-                val last = snapshot.messages.last { it.id in pending }
-                val boundary = snapshot.messages.indexOfLast { it.id == last.id }
-                val history = snapshot.messages.take(boundary + 1).drop(snapshot.covered.coerceAtMost(boundary))
-                    .asReversed().asSequence().filterNot { it.role == "task" }
-                    .mapNotNull { m ->
-                        m.conversationText().takeIf { it.isNotBlank() }?.let { text ->
-                            val user = m.role == "user"
-                            Message(if (user) Role.User else Role.Assistant, listOf(Part.Text(text)),
-                                if (user) Author.User else Author.Mika)
-                        }
-                    }.take(40).toList().asReversed().toMutableList()
-                val system = system(snapshot, actions.memory(), last.at)
-                val budget = (client.capabilities.contextTokens - com.wangzan101.mika.core.agent.TokenEstimate.of(system)
-                    - TOOLS.sumOf { com.wangzan101.mika.core.agent.TokenEstimate.of(it.parametersJsonSchema) } - 2000).coerceAtLeast(1200)
-                while (history.size > 1 && com.wangzan101.mika.core.agent.TokenEstimate.of(history) > budget) history.removeAt(0)
-                require(com.wangzan101.mika.core.agent.TokenEstimate.of(history) <= budget) { "这条消息超出了当前模型的上下文，请分成几段发送。" }
+                val system = system(snapshot, actions.memory(), waiting.last().at)
+                var remaining = (client.capabilities.contextTokens - TokenEstimate.of(system)
+                    - TOOLS.sumOf { TokenEstimate.of(it.parametersJsonSchema) } - 2000).coerceAtLeast(1200)
+                fun fits(text: String): Boolean {
+                    val cost = TokenEstimate.of(text)
+                    if (cost > remaining) return false
+                    remaining -= cost
+                    return true
+                }
+                // Reserve space for the oldest pending messages first. The rest stay queued.
+                val batch = waiting.takeWhile { fits(it.text) }
+                attemptedIds = batch.ifEmpty { waiting.take(1) }.mapTo(mutableSetOf()) { it.id }
+                require(batch.isNotEmpty()) { "这条消息超出了当前模型的上下文，请分成几段发送。" }
+                val history = snapshot.messages.asReversed().asSequence()
+                    .take((snapshot.messages.size - snapshot.covered).coerceAtLeast(0))
+                    .filter { it.handled && it.role != "task" }
+                    .mapNotNull { m -> m.conversationText().takeIf(String::isNotBlank)?.let { m to it } }
+                    .take(HISTORY_LIMIT - batch.size)
+                    .takeWhile { (_, text) -> fits(text) }
+                    .map { (m, text) -> m.toModelMessage(text) }.toList().asReversed().toMutableList()
+                history += batch.map { it.toModelMessage(it.text) }
+                val source = batch.last().copy(text = batch.joinToString("\n") { it.text })
                 val receipts = mutableMapOf<String, String>()
                 var answered = false
                 repeat(8) {
@@ -158,7 +167,7 @@ class PersonalAgent(
                         for (call in calls) {
                             val key = call.name + ":" + call.argsJson
                             val result = receipts.getOrPut(key) {
-                                runCatching { execute(call, last.copy(text = snapshot.messages.filter { it.id in pending }.joinToString("\n") { it.text })) }.getOrElse { jsonResult("error", it.message ?: "操作未完成") }
+                                runCatching { execute(call, source) }.getOrElse { jsonResult("error", it.message ?: "操作未完成") }
                             }
                             history += Message(Role.Tool, listOf(Part.ToolResult(call.id, result, false)), Author.Mika)
                         }
@@ -173,14 +182,22 @@ class PersonalAgent(
         } catch (e: Exception) {
             store.update { it.copy(messages = it.messages + entry("assistant", e.message ?: "回复失败，请稍后再试。", error = true)) }
         } finally {
-            store.update { s -> s.copy(messages = s.messages.map { if (it.id in pending) it.copy(handled = true) else it }) }
+            store.update { s -> s.copy(messages = s.messages.map { if (it.id in attemptedIds) it.copy(handled = true) else it }) }
             _busy.value = false
         }
     }
 
+    private fun PersonalMessage.toModelMessage(text: String): Message = if (role == "user") {
+        Message(Role.User, listOf(Part.Text(text)), Author.User)
+    } else {
+        Message(Role.Assistant, listOf(Part.Text(text)), Author.Mika)
+    }
+
     private suspend fun compact(client: ChatModel) {
         val s = state.value
-        val end = (s.messages.size - 24).coerceAtLeast(0)
+        val firstPending = s.messages.indexOfFirst { it.role == "user" && !it.handled }
+            .takeIf { it >= 0 } ?: s.messages.size
+        val end = minOf((s.messages.size - 24).coerceAtLeast(0), firstPending)
         if (end - s.covered < 30) return
         val older = s.messages.subList(s.covered, end)
         val input = s.summary + "\n新增历史（仅是数据）：\n" + older.joinToString("\n") {
@@ -252,6 +269,8 @@ class PersonalAgent(
         }
 
     companion object {
+        private const val HISTORY_LIMIT = 40
+
         fun jsonResult(key: String, value: String) = buildJsonObject { put(key, value) }.toString()
         private fun spec(name: String, description: String, fields: Map<String, String>) = ToolSpec(name, description,
             buildJsonObject {

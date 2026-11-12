@@ -22,8 +22,8 @@ class PersonalAgentTest {
         override fun remember(text: String, quote: String) = "已记住"
         override fun memory() = ""
     }
-    private class Model(val block: suspend (List<Message>) -> ModelReply) : ChatModel {
-        override val capabilities = Capabilities(true, false, 128_000, false)
+    private class Model(contextTokens: Int = 128_000, val block: suspend (List<Message>) -> ModelReply) : ChatModel {
+        override val capabilities = Capabilities(true, false, contextTokens, false)
         override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>) = block(messages)
     }
     private fun text(value: String) = ModelReply(listOf(Part.Text(value)), StopReason.EndTurn, null)
@@ -138,6 +138,34 @@ class PersonalAgentTest {
         release.complete(Unit); runCurrent()
         assertEquals(2, histories.size)
         assertTrue(histories.last().contains("第二句"))
+        assertFalse(store.state.value.messages.any { !it.handled })
+    }
+
+    @Test fun pendingMessagesBeyondTheHistoryLimitAreSentInOrder() = runTest {
+        val sent = List(62) { "queued message $it" }
+        assertPendingMessagesReachModel(sent)
+    }
+
+    @Test fun pendingMessagesBeyondTheTokenBudgetAreSentInOrder() = runTest {
+        val sent = List(3) { "queued message $it " + "x".repeat(8_000) }
+        assertPendingMessagesReachModel(sent, contextTokens = 6_000)
+    }
+
+    private fun TestScope.assertPendingMessagesReachModel(sent: List<String>, contextTokens: Int = 128_000) {
+        val store = Store()
+        val received = mutableListOf<String>()
+        val model = Model(contextTokens) { history ->
+            val pending = store.state.value.messages.filterNot { it.handled }.map { it.text }.toSet()
+            received += history.filter { it.role == Role.User }
+                .flatMap { it.parts }.filterIsInstance<Part.Text>().map { it.text }.filter { it in pending }
+            text("reply")
+        }
+        val agent = PersonalAgent(store, backgroundScope, { model }, Actions())
+        sent.forEach(agent::send)
+        runCurrent()
+
+        assertEquals(sent.size, received.size)
+        assertEquals(sent, received)
         assertFalse(store.state.value.messages.any { !it.handled })
     }
 
