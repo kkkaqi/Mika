@@ -140,6 +140,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".self.SelfNotificationActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
+
         <!-- 通知里接管按钮的落点:从通知启动 Activity 才会收起通知栏,让用户直接看到挪到主屏的 App -->
         <activity
             android:name=".takeover.TakeoverActivity"
