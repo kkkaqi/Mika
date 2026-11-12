@@ -151,6 +151,41 @@ class PersonalAgentTest {
         assertTrue(store.state.value.messages.last().error)
     }
 
+    @Test fun compactionAdvancesOnlyPastMessagesInTheSummaryRequest() = runTest {
+        val messages = List(53) { i ->
+            val body = if (i < 2) "entry-$i " + "x".repeat(26_000) else "entry-$i"
+            PersonalMessage("old-$i", "user", body, i.toLong())
+        }
+        val store = Store(PersonalState(messages = messages))
+        val inputs = mutableListOf<String>()
+        val agent = PersonalAgent(store, backgroundScope, { Model { inputs += flatten(it); text("摘要") } }, Actions())
+        agent.send("继续")
+        runCurrent()
+
+        assertEquals(1, store.state.value.covered)
+        assertTrue(inputs.first().contains(messages[0].text))
+        assertFalse(inputs.first().contains("entry-1 "))
+        assertEquals(messages, store.state.value.messages.take(messages.size))
+    }
+
+    @Test fun oversizedHistoryEntryIsCoveredAfterAllItsPartsAreSummarized() = runTest {
+        val marker = "end-of-long-entry"
+        val messages = List(53) { i ->
+            val body = if (i == 0) "x".repeat(51_000) + marker else "entry-$i"
+            PersonalMessage("old-$i", "assistant", body, i.toLong())
+        }
+        val store = Store(PersonalState(messages = messages))
+        val inputs = mutableListOf<String>()
+        val agent = PersonalAgent(store, backgroundScope, { Model { inputs += flatten(it); text("摘要") } }, Actions())
+        agent.send("继续")
+        runCurrent()
+
+        assertEquals(1, store.state.value.covered)
+        assertTrue(inputs.dropLast(1).size > 1)
+        assertTrue(inputs.dropLast(1).all { it.length <= 50_000 })
+        assertTrue(inputs.dropLast(1).last().contains(marker))
+    }
+
     @Test fun noModelIsAnHonestErrorNotASimulatedReply() = runTest {
         val store = Store()
         val agent = PersonalAgent(store, backgroundScope, { null }, Actions())
