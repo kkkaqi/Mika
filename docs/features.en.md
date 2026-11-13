@@ -83,6 +83,7 @@ The apps and websites that already have usage knowledge are listed in the collap
 ## Linux sandbox
 
 - Each conversation gets a workspace that can run Python, Node and shell commands, process files you send, and save results to your phone's Download/Mika folder.
+- Open **Files** in the sidebar to browse attachments and exported files. Combine name, conversation, source, and file type filters. File types are determined by extension and include images, PDFs, audio, video, and other files.
 - Long-press a conversation and choose "Terminal", or open "Files & computing environment" in Settings and tap "Open terminal" on a workspace row, to run commands yourself in that conversation's workspace. It uses the same workspace and network setting as Mika's scripts; Mika cannot see what is in the terminal, and terminal commands do not go into the conversation or run records.
 - Online by default; turn off "Allow scripts to go online" (允许脚本联网) under "Files & computing environment" (文件与计算环境) in Settings if you don't need it. arm64 devices only; on other devices the app installs normally and the sandbox shows "not supported on this device".
 - When it is online these commands also use **Settings › Network proxy** (the same proxy Mika uses for model calls, updates and the in-app browser; see [Models and sign-in](models.en.md#network-proxy)).
