@@ -201,17 +201,19 @@ class MikaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
     /** 没结束的运行的善后(标中断、补送、告知):进程里只做一次,App 启动和任务服务启动都调它。 */
     val runRecovery: RunRecovery by lazy {
         val app = this
-        val local = LocalChannel { _, delivery ->
+        fun localChannel(scheduled: Boolean) = LocalChannel { _, delivery ->
             TaskService.ensureChannels(app)
-            TaskService.notifyDelivery(app, delivery, TaskService.nextResultId())
+            TaskService.notifyDelivery(app, delivery, TaskService.nextResultId(), scheduled)
         }
+        val local = localChannel(scheduled = false)
         val labels = com.wangzan101.mika.ui.ToolLabels(com.wangzan101.mika.core.assembly.knownTools())
         RunRecovery(runStore, outbox, { id -> if (id == LocalChannel.ID) local else wechat.channelFor(id) }, object : TriggerOutcomes {
             override fun interrupted(key: String, reason: String) = TriggerRuntime.interrupted(app, key, reason)
             override fun delivered(key: String) = TriggerRuntime.delivered(app, key)
             override fun actionFailed(key: String, reason: String) = TriggerRuntime.actionFailed(app, key, reason)
         }, conversations, scope, records = com.wangzan101.mika.record.RunStore(app).reader(), label = labels::label,
-            appLabel = { com.wangzan101.mika.confirm.ConfirmationNotifier.appLabel(app, it) })
+            appLabel = { com.wangzan101.mika.confirm.ConfirmationNotifier.appLabel(app, it) },
+            scheduledLocalChannel = localChannel(scheduled = true))
     }
 
     /** 站点登记表(登录过的网站等):设置页和标签池共用。 */

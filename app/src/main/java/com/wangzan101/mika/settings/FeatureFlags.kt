@@ -17,9 +17,22 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import java.time.LocalTime
 
 /** 功能开关。提速开关存成 [SpeedFlags.describe] 的格式,评测跑器可用参数覆盖。 */
 class FeatureFlags(private val prefs: SharedPreferences) {
+    fun scheduledQuietHours(): ScheduledQuietHours {
+        val parts = prefs.getString(SCHEDULED_QUIET_HOURS, null)?.split(',')
+        if (parts?.size != 3) return ScheduledQuietHours.DEFAULT
+        return runCatching {
+            ScheduledQuietHours(parts[0].toBooleanStrict(), LocalTime.parse(parts[1]), LocalTime.parse(parts[2]))
+        }.getOrDefault(ScheduledQuietHours.DEFAULT)
+    }
+
+    fun setScheduledQuietHours(hours: ScheduledQuietHours) {
+        prefs.edit().putString(SCHEDULED_QUIET_HOURS, "${hours.enabled},${hours.start},${hours.end}").apply()
+    }
+
     fun personalStart(): Boolean = prefs.getBoolean(PERSONAL_START, false)
 
     fun setPersonalStart(on: Boolean) {
@@ -314,6 +327,7 @@ class FeatureFlags(private val prefs: SharedPreferences) {
 
     companion object {
         const val PREFS = "feature_flags"
+        private const val SCHEDULED_QUIET_HOURS = "scheduled_quiet_hours"
         /** 每个任务步数上限能设的最大值;0/null 表示不限制。 */
         const val MAX_TASK_STEP_LIMIT = 500
         private const val SPEED_FLAGS = "speed_flags"
