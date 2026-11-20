@@ -31,12 +31,12 @@ internal object RateLimitGovernor {
         }
     }
 
-    /** 撞 429：记冷却时长并返回(ms)。有 Retry-After 照它(上限 [RETRY_AFTER_CAP]，退避链归零)；没有按连续 429 指数退避。 */
+    /** 撞 429：记冷却时长并返回(ms)。Retry-After 至少等 1 秒，避免零等待绕过任务预算；没有则指数退避。 */
     fun reportRateLimited(providerKey: String, retryAfterMs: Long?): Long {
         val s = states.computeIfAbsent(providerKey) { State() }
         val wait = if (retryAfterMs != null) {
             s.consecutive429 = 0
-            retryAfterMs.coerceIn(0, RETRY_AFTER_CAP)
+            retryAfterMs.coerceIn(BASE_BACKOFF_MS, RETRY_AFTER_CAP)
         } else {
             val n = s.consecutive429 + 1
             s.consecutive429 = n

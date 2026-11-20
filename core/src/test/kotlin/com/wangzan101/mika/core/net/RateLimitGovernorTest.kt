@@ -15,6 +15,13 @@ class RateLimitGovernorTest {
         assertEquals(30_000L, RateLimitGovernor.reportRateLimited("m", 90_000L))
     }
 
+    @Test fun nonPositiveRetryAfterStillWaitsAndConsumesBudget() = runTest {
+        assertEquals(1_000L, RateLimitGovernor.reportRateLimited("zero", 0L))
+        assertEquals(1_000L, RateLimitGovernor.reportRateLimited("negative", -1L))
+        RateLimitGovernor.awaitClear("zero")
+        assertEquals(1_000L, currentTime)
+    }
+
     @Test fun backoffIncrementsWithoutRetryAfter() {
         assertEquals(1_000L, RateLimitGovernor.reportRateLimited("m", null))
         assertEquals(2_000L, RateLimitGovernor.reportRateLimited("m", null))

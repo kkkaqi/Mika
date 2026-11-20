@@ -84,6 +84,14 @@ private val FIXED_RETRY = RetryPolicy(jitter = { 1.0 })
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class AgentLoopTest {
+    @Test fun zeroRetryAfterCannotBypassTaskWaitBudget() = runTest {
+        val model = FakeModel(*Array(10) { ModelError.RateLimited(0) }, finish())
+        val end = AgentLoop(model, toolDispatcher(FakeScreen()), "BASE",
+            retry = RetryPolicy(taskWaitBudgetMs = 1)).run("task")
+        assertTrue(end is TaskState.Failed)
+        assertEquals(1, model.requests.size)
+    }
+
     /** 只有手机、展开了手机一组之后的系统提示词:几组的入口、交给用户的规矩、手机一段(去掉没提供的工具那几行)。 */
     private fun phoneOpenedPrompt(base: String) = listOf(
         base, com.wangzan101.mika.core.capability.PromptEnv(setOf("phone_launch_app", "phone_set_alarm"), false).gate(SystemPrompt.read("groups")), SystemPrompt.read("handover"),
