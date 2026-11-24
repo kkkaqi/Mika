@@ -9,6 +9,7 @@ import android.webkit.MimeTypeMap
 import com.wangzan101.mika.cap.sandbox.AttachmentFailure
 import com.wangzan101.mika.cap.sandbox.AttachmentFailureReason
 import com.wangzan101.mika.cap.sandbox.Attachments
+import com.wangzan101.mika.settings.FeatureFlags
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -85,6 +86,7 @@ class SharedDraftImporter(private val context: Context, private val store: Share
                 return SingleOutcome.Failed(AttachmentFailure(Attachments.safeName(fallbackLabel), AttachmentFailureReason.IO_ERROR))
             }
             val resolver = context.contentResolver
+            val maxBytes = FeatureFlags.get(context).attachmentMaxBytes()
             val providerType = runCatching { resolver.getType(uri) }.getOrNull()?.substringBefore(';')?.trim()?.lowercase()
             var display: String? = null
             var declaredSize = -1L
@@ -101,7 +103,7 @@ class SharedDraftImporter(private val context: Context, private val store: Share
             val sourceName = display?.takeIf { it.isNotBlank() }
                 ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { '.' in it }
             if (sourceName != null) fallbackLabel = sourceName
-            if (declaredSize > Attachments.MAX_BYTES) {
+            if (declaredSize > maxBytes) {
                 return SingleOutcome.Failed(AttachmentFailure(Attachments.safeName(fallbackLabel), AttachmentFailureReason.TOO_LARGE))
             }
             val mimeMap = MimeTypeMap.getSingleton()
@@ -129,7 +131,7 @@ class SharedDraftImporter(private val context: Context, private val store: Share
                     copiedFiles.remove(final)
                 }
             val size = resolver.openInputStream(uri)?.use { input ->
-                SharedDraftCopy.copy(input, tmp, final) { tmp.parentFile?.usableSpace ?: 0L }
+                SharedDraftCopy.copy(input, tmp, final, maxBytes = maxBytes) { tmp.parentFile?.usableSpace ?: 0L }
             } ?: run {
                 copiedFiles.remove(final)
                 final.delete()
