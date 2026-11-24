@@ -42,23 +42,26 @@ class VoiceCallFeed(private val maxItems: Int = MAX_ITEMS) {
 
     /** 路由的办事状态:[busy] 是否在办,[lines] 是路由滚动的状态行(新的在最后)。 */
     fun onTask(busy: Boolean, lines: List<String>) = synchronized(lock) {
+        // 状态流可能合并多次更新;找前次后缀与本次前缀的重叠,一次补齐缓冲中全部新增行。
+        val overlap = (minOf(taskBaseline.size, lines.size) downTo 0).first {
+            taskBaseline.takeLast(it) == lines.take(it)
+        }
+        val added = lines.drop(overlap)
+        // 空闲时也记住上次任务的末尾,新卡打开时只接本次的新行。
+        taskBaseline = lines.toList()
         val open = openTaskId
         if (open == null) {
             if (!busy) return@synchronized
-            // 开卡时的状态行是上一次办事留下的,不算这次的步骤
-            taskBaseline = lines
             val id = nextId++
             openTaskId = id
-            publish(_items.value + VoiceCallFeedItem.Task(id, emptyList(), running = true))
+            publish(_items.value + VoiceCallFeedItem.Task(id, added, running = true))
             return@synchronized
         }
         var current = _items.value
-        val latest = lines.lastOrNull()
-        if (lines != taskBaseline && latest != null) {
-            taskBaseline = lines
+        if (added.isNotEmpty()) {
             current = current.map { item ->
-                if (item is VoiceCallFeedItem.Task && item.id == open && item.steps.lastOrNull() != latest) {
-                    item.copy(steps = item.steps + latest)
+                if (item is VoiceCallFeedItem.Task && item.id == open) {
+                    item.copy(steps = item.steps + added)
                 } else item
             }
         }
