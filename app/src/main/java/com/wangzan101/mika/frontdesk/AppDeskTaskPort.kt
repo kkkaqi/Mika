@@ -138,8 +138,9 @@ class AppDeskTaskPort(
         val live = current().firstOrNull { it.conversationId == taskId }
         val initial = live?.state?.value ?: ended(taskId) ?: TaskState.Failed(interrupted(), FailKind.Interrupted)
         val entry = Followed(MutableStateFlow(initial), null, adopted = true)
+        entry.runKey = live?.key
         followed[taskId] = entry
-        if (initial !is TaskState.Terminal) mirror(taskId, entry)
+        if (initial !is TaskState.Terminal) mirror(taskId, entry, live)
         return entry.state.asStateFlow()
     }
 
@@ -177,12 +178,18 @@ class AppDeskTaskPort(
         return true
     }
 
-    private fun live(taskId: String): DeskRun? = current().firstOrNull { it.conversationId == taskId }
+    @Synchronized
+    private fun live(taskId: String): DeskRun? {
+        val entry = followed[taskId] ?: return null
+        if (entry.state.value is TaskState.Terminal) return null
+        val runKey = entry.runKey ?: return null
+        return current().firstOrNull { it.conversationId == taskId && it.key == runKey }
+    }
 
     /** 等任务在服务里登记,然后跟着它的状态走,收尾即停;一直没登记时按子会话记下的结局,没有就记成没开始。 */
-    private fun mirror(child: String, entry: Followed) {
+    private fun mirror(child: String, entry: Followed, adoptedRun: DeskRun? = null) {
         scope.launch {
-            val run = withTimeoutOrNull(startTimeoutMs) {
+            val run = adoptedRun ?: withTimeoutOrNull(startTimeoutMs) {
                 runs.mapNotNull { list -> list.firstOrNull { it.conversationId == child } }.first()
             }
             if (run == null) {
