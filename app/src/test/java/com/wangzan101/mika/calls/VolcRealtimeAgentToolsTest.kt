@@ -169,7 +169,10 @@ class VolcRealtimeAgentToolsTest {
         }
     }
 
-    private fun audio(type: String, response: String) = """{"type":"$type","response_id":"$response"}"""
+    private fun audio(type: String, response: String, request: String? = null) = buildJsonObject {
+        put("type", type); put("response_id", response)
+        request?.let { put("event_id", it) }
+    }.toString()
 
     @Test fun aNoticeEndsSpokenOnlyWhenItsResponseFinishes() = runBlocking {
         fixture {
@@ -179,9 +182,10 @@ class VolcRealtimeAgentToolsTest {
             peer().send(audio(VolcRealtimeProtocol.AUDIO_STARTED, "r0"))
             val ends = Channel<Boolean>(4)
             assertTrue(session.sendNotice("订日料那件,办好了") { ends.trySend(it) })
-            assertEquals("speech_text_buffer.commit", nextMessage().type)
+            val notice = nextMessage()
+            assertEquals("speech_text_buffer.commit", notice.type)
             peer().send(audio(VolcRealtimeProtocol.AUDIO_DONE, "r0"))
-            peer().send(audio(VolcRealtimeProtocol.AUDIO_STARTED, "r1"))
+            peer().send(audio(VolcRealtimeProtocol.AUDIO_STARTED, "r1", notice.getValue("event_id").jsonPrimitive.content))
             delay(200)
             assertTrue("上一句播完、这条刚开播,还不算说完", ends.isEmpty)
             peer().send(audio(VolcRealtimeProtocol.AUDIO_DONE, "r1"))
