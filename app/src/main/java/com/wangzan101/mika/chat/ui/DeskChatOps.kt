@@ -310,26 +310,32 @@ internal class DeskChatOps(
      * 页面开着这条会话时说一句汇报。开始、排队、进度在进度条里实时看得到,要你处理在对话里有问题卡,都不另说一句;
      * 办好了把后台的完整结果原文写成一行汇报,不经前台模型转述;没办成由前台说(原因和下一步),写成一行汇报。
      * 页面不在、没配模型、前台什么也没说时返回 false(交给兜底);前台说失败时去掉这一行、抛出,也交给兜底。
+     * 停止键只停前台说的那一句:说出一部分的写下,一个字没说的交给兜底;办好了的结果原文不经模型,不随停止取消。
      */
-    override suspend fun deliver(report: DeskReport): Boolean = supervisorScope {
-        // 单条汇报独立取消,不能把 FrontDesk 常驻的投递协程也停掉。
-        val reply = tracked(async(start = CoroutineStart.LAZY) { deliverReport(report) })
-        try {
-            reply.await()
-        } catch (e: CancellationException) {
-            currentCoroutineContext().ensureActive()
-            if (e is Stopped) true else throw e
-        }
-    }
-
-    private suspend fun deliverReport(report: DeskReport): Boolean {
+    override suspend fun deliver(report: DeskReport): Boolean {
         if (!page.showing(conversationId)) return false
         when (val event = report.event) {
             is DeskEvent.Started, is DeskEvent.Queued, is DeskEvent.Progress,
             is DeskEvent.NeedsAnswer, is DeskEvent.NeedsAction -> return true
+            // 等回话锁时被停掉会让结果既不进对话也不交兜底,所以不进 [replies]
             is DeskEvent.Succeeded -> return turns.withLock { result(event.taskId, DeskNotifier.rowText(report).orEmpty()) }
             else -> Unit
         }
+        return supervisorScope {
+            var kept = false
+            // 单条汇报独立取消,不能把 FrontDesk 常驻的投递协程也停掉。
+            val reply = tracked(async(start = CoroutineStart.LAZY) { notice(report) { kept = true } })
+            try {
+                reply.await()
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+                if (e is Stopped) kept else throw e
+            }
+        }
+    }
+
+    /** 没办成、取消了由前台说一句;停止时说出一部分就写下并调 [kept]。 */
+    private suspend fun notice(report: DeskReport, kept: () -> Unit): Boolean {
         val brain = deps.brain(conversationId, vm.effectiveMainModelChoice(conversationId)) ?: return false
         return turns.withLock {
             if (!page.showing(conversationId)) return@withLock false
@@ -353,6 +359,7 @@ internal class DeskChatOps(
                         update(runId) { it.copy(deskReply = text, status = ExchangeStatus.Done(text, null)) }
                         persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = startedAt, deskTasks = tasks))
                     }
+                    kept()
                 } else remove(runId)
                 throw e
             } catch (e: Throwable) {
@@ -364,6 +371,7 @@ internal class DeskChatOps(
                 remove(runId)
                 return@withLock false
             }
+            kept()
             withContext(NonCancellable) {
                 update(runId) { it.copy(deskReply = text, status = ExchangeStatus.Done(text, null)) }
                 persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = startedAt, deskTasks = tasks))

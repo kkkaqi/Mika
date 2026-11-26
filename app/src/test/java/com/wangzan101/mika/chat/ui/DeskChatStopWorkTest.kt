@@ -164,7 +164,7 @@ class DeskChatStopWorkTest {
                 val (desk, ledger) = entry(id)
                 DeskToolExecutor(port, ledger, words, { 0L }, id) { desk.track(it.taskId, it.title) }
             },
-            brain = { brains() },
+            brain = { _, _ -> brains() },
             title = title,
         )
         val vm = ChatViewModel(backgroundScope, MutableStateFlow(TaskState.Idle), MutableStateFlow(Takeover.Stage.None), actions, store,
@@ -292,7 +292,7 @@ class DeskChatStopWorkTest {
         assertTrue(h.vm.ui.value.exchanges.all { it.status is ExchangeStatus.Done })
     }
 
-    @Test fun stoppingAnEmptyReportRemovesThePendingRowWithoutFallback() = runTest {
+    @Test fun stoppingAnEmptyReportRemovesThePendingRowAndHandsItToTheFallback() = runTest {
         val gate = CompletableDeferred<Unit>()
         val brain = ScriptBrain({ text, ctx -> ctx.callTool(DeskTools.DISPATCH, dispatch(text, "task")) },
             { _, _ -> gate.await() })
@@ -311,6 +311,39 @@ class DeskChatStopWorkTest {
 
         assertEquals(1, h.vm.ui.value.exchanges.size)
         assertEquals(1, h.store.turns("c").size)
+        // 一个字没说就被停:失败这件事交给兜底,不能就此丢掉
+        assertEquals(listOf("child-1"), h.sunk.map { it.second.event.taskId })
+    }
+
+    @Test fun stoppingWhileASuccessReportWaitsForTheReplyKeepsTheResult() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var replies = 0
+        val brain = ScriptBrain({ text, ctx ->
+            replies++
+            if (replies == 1) ctx.callTool(DeskTools.DISPATCH, dispatch(text, "task"))
+            else { ctx.say("thinking"); gate.await() }
+        })
+        val h = harness(brain)
+        h.vm.openConversation("c")
+        h.vm.pageShown(true)
+        runCurrent()
+        assertTrue(h.vm.send("work", ok))
+        runCurrent()
+        // 第二句正在回话、占着回话锁;这时后台任务办好了,汇报排在锁后面
+        assertTrue(h.vm.send("another question", ok))
+        runCurrent()
+        h.port.states.getValue("child-1").value = TaskState.Succeeded("task result")
+        runCurrent()
+
+        h.vm.stopAll()
+        runCurrent()
+
+        val saved = h.store.turns("c")
+        val result = saved.single { it.status == DeskTurn.REPORT_STATUS }
+        assertTrue(result.outcome.contains("task result"))
+        assertEquals(listOf("child-1"), result.deskTasks)
+        assertTrue(h.vm.ui.value.exchanges.any { it.deskReply.orEmpty().contains("task result") })
+        assertTrue(h.vm.ui.value.exchanges.all { it.status is ExchangeStatus.Done })
         assertTrue(h.sunk.isEmpty())
     }
 
