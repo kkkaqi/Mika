@@ -19,8 +19,10 @@ import com.wangzan101.mika.frontdesk.DeskNotifier
 import com.wangzan101.mika.i18n.tr
 import com.wangzan101.mika.settings.Problem
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
@@ -207,7 +209,27 @@ internal class DeskChatOps(
             if (it.conversationId != null && it.conversationId != conversationId) it
             else it.copy(conversationId = conversationId, exchanges = it.exchanges + row, blocked = null)
         }
-        val job = vm.scope.launch { turns.withLock { answer(brain, text, runId, startedAt) } }
+        val job = vm.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val replyContext = currentCoroutineContext()
+            // 先按发送顺序排上队;停止只取消回话,不取消等待落库的位置。
+            withContext(NonCancellable) {
+                turns.withLock {
+                    var answering = false
+                    try {
+                        // 模型仍在原来的可取消上下文里运行。
+                        withContext(replyContext) {
+                            answering = true
+                            answer(brain, text, runId, startedAt)
+                        }
+                    } catch (e: CancellationException) {
+                        if (!answering) {
+                            persist(Turn(text, "", DeskTurn.STATUS, runId = runId, atMs = startedAt))
+                        }
+                        throw e
+                    }
+                }
+            }
+        }
         replies += job
         job.invokeOnCompletion { cause ->
             replies -= job

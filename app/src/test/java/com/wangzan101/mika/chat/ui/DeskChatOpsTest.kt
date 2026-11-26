@@ -660,6 +660,68 @@ class DeskChatOpsTest {
         assertEquals(listOf("child-1"), h.port.cancelled)
     }
 
+    @Test fun stoppingQueuedRepliesKeepsSentMessagesInOrder() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val brain = ScriptBrain({ _, ctx -> ctx.say("partial"); gate.await() })
+        val h = harness(brain)
+        h.vm.openConversation("c")
+        runCurrent()
+        assertTrue(h.vm.send("first", ok))
+        runCurrent()
+        listOf("second", "third", "fourth").forEach { assertTrue(h.vm.send(it, ok)) }
+        runCurrent()
+
+        h.vm.stopAll()
+        runCurrent()
+
+        val expected = listOf("first", "second", "third", "fourth")
+        assertEquals(expected, h.store.turns("c").map { it.userText })
+        assertEquals(listOf("partial", "", "", ""), h.store.turns("c").map { it.outcome })
+        assertEquals(listOf("first"), brain.replies)
+        assertTrue(h.vm.ui.value.exchanges.all { it.status is ExchangeStatus.Done })
+        h.vm.openConversation("other")
+        runCurrent()
+        h.vm.openConversation("c")
+        runCurrent()
+        assertEquals(expected, h.vm.ui.value.exchanges.map { it.goal })
+    }
+
+    @Test fun stoppingImmediatelyStillSavesEverySentMessage() = runTest {
+        val brain = ScriptBrain({ _, _ -> error("A stopped reply must not reach the model") })
+        val h = harness(brain)
+        h.vm.openConversation("c")
+        runCurrent()
+        listOf("first", "second", "third").forEach { assertTrue(h.vm.send(it, ok)) }
+        h.vm.stopAll()
+        runCurrent()
+
+        assertEquals(listOf("first", "second", "third"), h.store.turns("c").map { it.userText })
+        assertTrue(brain.replies.isEmpty())
+        assertTrue(h.vm.ui.value.exchanges.all { it.status is ExchangeStatus.Done })
+    }
+
+    @Test fun stoppingAnAnswerSavesItsPartialReplyAndTaskExactlyOnce() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val brain = ScriptBrain({ text, ctx ->
+            ctx.callTool(DeskTools.DISPATCH, dispatch(text, "task"))
+            ctx.say("partial")
+            gate.await()
+        })
+        val h = harness(brain)
+        h.vm.openConversation("c")
+        runCurrent()
+        assertTrue(h.vm.send("work", ok))
+        runCurrent()
+        h.vm.stopAll()
+        runCurrent()
+
+        val saved = h.store.turns("c").single()
+        assertEquals("work", saved.userText)
+        assertEquals("partial", saved.outcome)
+        assertEquals(listOf("child-1"), saved.deskTasks)
+        assertEquals(h.vm.ui.value.exchanges.single().runId, saved.runId)
+    }
+
     // 用户只看得到 Mika:通知、小画面、旧链接要打开 Mika 办事用的子对话时,打开的是它所属的那条聊天
     @Test fun openingAChildConversationOpensItsParent() = runTest {
         val h = harness(ScriptBrain({ _, _ -> }))
