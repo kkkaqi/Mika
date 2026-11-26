@@ -11,6 +11,7 @@ import com.wangzan101.mika.task.SteerNote
 import com.wangzan101.mika.task.SteerState
 import com.wangzan101.mika.task.unconsumed
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -173,7 +174,8 @@ internal class ChatSendOps(private val vm: ChatViewModel, private val session: C
         val importedUris = items.map { it.uri }.distinct()
         importedUris.forEach { uri -> libraryImports[uri] = (libraryImports[uri] ?: 0) + 1 }
         _ui.update { it.copy(importing = true, rejectedAttachments = emptyList(), overLimit = 0) }
-        scope.launch {
+        val desk = vm.deskFor(id)
+        val preparing = scope.launch(start = if (desk != null) CoroutineStart.UNDISPATCHED else CoroutineStart.DEFAULT) {
             val r = try {
                 val workspaceItems = items.filter { it.workspacePath != null }
                 val checks = if (workspaceItems.all { it.workspaceConversationId == id }) {
@@ -211,6 +213,7 @@ internal class ChatSendOps(private val vm: ChatViewModel, private val session: C
                     val count = (libraryImports[uri] ?: 1) - 1
                     if (count == 0) libraryImports.remove(uri) else libraryImports[uri] = count
                 }
+                session.updateDraft(id) { it.copy(importing = false) }
                 session.releaseUnusedLibraryCopies()
             }
             session.updateDraft(id) { it.copy(importing = false, rejected = r.failures) }
@@ -221,7 +224,6 @@ internal class ChatSendOps(private val vm: ChatViewModel, private val session: C
             val currentAttachments = now.attachments
             val draftReplaced = sharedDraftSerial != serialBefore
             val keepNewerAttachments = draftReplaced || currentAttachments != submitted.attachments
-            val desk = vm.deskFor(id)
             // 交给前台时不看有没有任务在跑;不走前台时照旧:复制期间开始了别的任务就不发了,草稿和附件留着
             val accepted = desk != null || now.composer == ComposerMode.Idle
             if (accepted && desk != null) {
@@ -243,6 +245,7 @@ internal class ChatSendOps(private val vm: ChatViewModel, private val session: C
                 session.releaseUnusedLibraryCopies()
             }
         }
+        desk?.line(id)?.trackAttachmentImport(preparing)
         return true
     }
 

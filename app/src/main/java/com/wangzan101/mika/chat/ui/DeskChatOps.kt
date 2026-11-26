@@ -19,15 +19,21 @@ import com.wangzan101.mika.frontdesk.DeskNotifier
 import com.wangzan101.mika.i18n.tr
 import com.wangzan101.mika.settings.Problem
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -165,11 +171,21 @@ internal class DeskChatOps(
     /** 前台正在回的这一句(用户自己说的部分);不在回话时为 null。取消只认它。 */
     @Volatile private var current: String? = null
 
-    /** 还没回完的几句(在回的和排在后面的);输入框的停止键一起停掉。 */
-    private val replies = java.util.concurrent.ConcurrentHashMap.newKeySet<kotlinx.coroutines.Job>()
+    /** 还没回完的话(含汇报、排队回复)和附件派发;输入框的停止键一起停掉。 */
+    private val replies = java.util.concurrent.ConcurrentHashMap.newKeySet<Job>()
 
-    /** 停下前台还没回完的话:在回的这句停在已说的地方,排着的不再回。 */
-    fun stopReplies() { replies.toList().forEach { it.cancel() } }
+    private class Stopped : CancellationException("Chat stopped")
+
+    /** 停下这条会话的前台工作,不取消常驻前台的汇报投递循环。 */
+    fun stopReplies() { replies.toList().forEach { it.cancel(Stopped()) } }
+
+    private fun <T : Job> tracked(job: T): T = job.also {
+        replies += job
+        job.invokeOnCompletion { replies -= job }
+    }
+
+    /** 附件还在导入当前会话、尚未派给子任务时也属于这次发送。 */
+    fun trackAttachmentImport(job: Job) { tracked(job) }
 
     /** 起标题这件事这条入口做过没有。 */
     @Volatile private var named = false
@@ -232,22 +248,31 @@ internal class DeskChatOps(
             if (it.conversationId != null && it.conversationId != conversationId) it
             else it.copy(conversationId = conversationId, exchanges = it.exchanges + row, blocked = null)
         }
-        vm.scope.launch {
-            val result = try {
-                executor(words).dispatchWithFiles(typed, title) { child -> copyFiles(child, files)?.let { ChatReduce.withAttachments(text, it) } }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                null
+        // 发送返回前就进入 finally 的保护范围,紧接着点停止也会保存用户这一句。
+        tracked(vm.scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            var tasks = emptyList<String>()
+            var failure: String? = null
+            try {
+                currentCoroutineContext().ensureActive()
+                val result = try {
+                    executor(words).dispatchWithFiles(typed, title) { child -> copyFiles(child, files)?.let { ChatReduce.withAttachments(text, it) } }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+                val status = result?.string("status")
+                val taskId = result?.string("task_id")?.takeIf { status == "started" || status == "queued" }
+                failure = if (taskId == null) result?.string("reason") ?: status ?: "dispatch_error" else null
+                tasks = listOfNotNull(taskId)
+            } finally {
+                withContext(NonCancellable) {
+                    update(runId) { it.copy(deskTasks = tasks, status = failure?.let(ExchangeStatus::Failed) ?: ExchangeStatus.Done("", null)) }
+                    // 停止附件准备也要收尾;已经派出的任务编号不能因等待回话锁而丢掉。
+                    turns.withLock { persist(Turn(goal, "", DeskTurn.STATUS, note = failure, runId = runId, atMs = startedAt, deskTasks = tasks)) }
+                }
             }
-            val status = result?.string("status")
-            val taskId = result?.string("task_id")?.takeIf { status == "started" || status == "queued" }
-            val failure = if (taskId == null) result?.string("reason") ?: status ?: "dispatch_error" else null
-            val tasks = listOfNotNull(taskId)
-            update(runId) { it.copy(deskTasks = tasks, status = failure?.let(ExchangeStatus::Failed) ?: ExchangeStatus.Done("", null)) }
-            // 和前台的回话排在同一条线上落库,重读会话时先后不乱
-            turns.withLock { persist(Turn(goal, "", DeskTurn.STATUS, note = failure, runId = runId, atMs = startedAt, deskTasks = tasks)) }
-        }
+        })
     }
 
     /** 把这条会话工作区里的文件复制进子会话 [child] 的工作区;有一个没复制成就整件不派(返回 null)。 */
@@ -263,7 +288,18 @@ internal class DeskChatOps(
      * 办好了把后台的完整结果原文写成一行汇报,不经前台模型转述;没办成由前台说(原因和下一步),写成一行汇报。
      * 页面不在、没配模型、前台什么也没说时返回 false(交给兜底);前台说失败时去掉这一行、抛出,也交给兜底。
      */
-    override suspend fun deliver(report: DeskReport): Boolean {
+    override suspend fun deliver(report: DeskReport): Boolean = supervisorScope {
+        // 单条汇报独立取消,不能把 FrontDesk 常驻的投递协程也停掉。
+        val reply = tracked(async(start = CoroutineStart.LAZY) { deliverReport(report) })
+        try {
+            reply.await()
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            if (e is Stopped) true else throw e
+        }
+    }
+
+    private suspend fun deliverReport(report: DeskReport): Boolean {
         if (!page.showing(conversationId)) return false
         when (val event = report.event) {
             is DeskEvent.Started, is DeskEvent.Queued, is DeskEvent.Progress,
@@ -287,6 +323,15 @@ internal class DeskChatOps(
             try {
                 prepare(brain)
                 brain.notice(noticeText(report), context(runId, reply, tasks, executor(DeskWords.None)))
+            } catch (e: CancellationException) {
+                val text = reply.toString()
+                if (e is Stopped && text.isNotBlank()) {
+                    withContext(NonCancellable) {
+                        update(runId) { it.copy(deskReply = text, status = ExchangeStatus.Done(text, null)) }
+                        persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = startedAt, deskTasks = tasks))
+                    }
+                } else remove(runId)
+                throw e
             } catch (e: Throwable) {
                 remove(runId)
                 throw e
@@ -296,8 +341,10 @@ internal class DeskChatOps(
                 remove(runId)
                 return@withLock false
             }
-            update(runId) { it.copy(deskReply = text, status = ExchangeStatus.Done(text, null)) }
-            persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = startedAt, deskTasks = tasks))
+            withContext(NonCancellable) {
+                update(runId) { it.copy(deskReply = text, status = ExchangeStatus.Done(text, null)) }
+                persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = startedAt, deskTasks = tasks))
+            }
             true
         }
     }
@@ -312,7 +359,9 @@ internal class DeskChatOps(
             else it.copy(exchanges = it.exchanges + Exchange("", emptyList(), ExchangeStatus.Done(text, null), live = true, runId = runId,
                 startedAt = at, deskReply = text, deskTasks = listOf(taskId)))
         }
-        persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = at, deskTasks = listOf(taskId)))
+        withContext(NonCancellable) {
+            persist(Turn("", text, DeskTurn.REPORT_STATUS, runId = runId, atMs = at, deskTasks = listOf(taskId)))
+        }
         return true
     }
 
