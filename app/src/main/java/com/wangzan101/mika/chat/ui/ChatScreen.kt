@@ -545,7 +545,7 @@ fun ChatScreen(
             hasHistory = ui.exchanges.isNotEmpty(),
             onSend = { vm.send(input, check) },
             onStop = vm::stopAll,
-            working = ui.deskTasks.isNotEmpty() || ui.exchanges.any { it.deskReply != null && it.status == ExchangeStatus.Working },
+            working = ui.deskTasks.any { it.inProgress } || ui.exchanges.any { it.deskReply != null && it.status == ExchangeStatus.Working },
             queued = ui.queued,
             onQueueActions = { queueActions = it },
             onCancelQueued = { id ->
